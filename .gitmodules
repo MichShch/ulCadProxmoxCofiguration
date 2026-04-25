@@ -1,0 +1,3 @@
+[submodule "cad_terraform"]
+	path = cad_terraform
+	url = https://github.com/MichShch/cad_terraform.git
