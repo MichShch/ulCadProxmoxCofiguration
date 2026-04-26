@@ -38,6 +38,158 @@
 6. Рабочие виртуальные машины.
    ВМ создаются из шаблонов и подключаются к VNet. Они используются как рабочие узлы системы распределённых вычислений.
 
+## Сабмодули репозитория
+
+В репозитории подключены вспомогательные сабмодули, которые описывают отдельные части инфраструктуры:
+
+| Сабмодуль | Назначение | Что содержит |
+|---|---|---|
+| `cad_terraform` | Автоматизированное создание рабочих ВМ в Proxmox | Terraform-конфигурацию, модуль пула `DCWorker`, локальный mirror/cache провайдера `bpg/proxmox` |
+| `cad_dhcp` | DHCP для виртуальных сетей кластера | Конфигурацию Kea DHCPv4 с адресными пулами для сетей `10.10.0.0/24` и `10.10.1.0/24` |
+| `cad_dns` | DNS для внутренней инфраструктуры | Конфигурацию Unbound, локальную зону `cad.internal` и записи для Proxmox-нод |
+
+После клонирования репозитория сабмодули нужно инициализировать:
+
+```bash
+git submodule update --init --recursive
+```
+
+Если сабмодули уже были добавлены, но требуется получить свежие изменения:
+
+```bash
+git submodule update --remote --recursive
+```
+
+### `cad_terraform`
+
+Сабмодуль `cad_terraform` отвечает за развёртывание рабочих виртуальных машин в Proxmox через Terraform. Он использует провайдер `bpg/proxmox` версии `~> 0.103`.
+
+Основная лабораторная конфигурация находится в каталоге:
+
+```text
+cad_terraform/envirnoments/lab
+```
+
+Внутри описан модуль `dcworker_pool`, который:
+
+- берёт исходный шаблон ВМ `source_template_vm_id = 3000` на ноде `pve1`;
+- создаёт полные шаблоны на целевых нодах `pve1` - `pve11`;
+- создаёт linked clone рабочих ВМ из локального шаблона на каждой ноде;
+- настраивает получение IPv4-адреса по DHCP через cloud-init;
+- подключает ВМ к bridge `virt2`;
+- использует хранилище `local-zfs`;
+- по умолчанию задаёт 2 сокета, 4 ядра на сокет и 20480 МБ ОЗУ на worker.
+
+Текущий пример создаёт 29 worker-ВМ: по одной на `pve1` и `pve3`, по три на остальных нодах `pve2`, `pve4` - `pve11`.
+
+Перед применением нужно заполнить переменные доступа к API Proxmox:
+
+```bash
+cd cad_terraform/envirnoments/lab
+```
+
+Реальный `terraform.tfvars` не хранится в git. Для старта можно скопировать пример:
+
+```bash
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Значения `proxmox_api_token_id` и `proxmox_api_token_secret` лучше передавать через переменные окружения, чтобы не хранить секреты в репозитории:
+
+```bash
+export TF_VAR_proxmox_api_token_id='terraform@pve!iac'
+export TF_VAR_proxmox_api_token_secret='token-secret'
+terraform init
+terraform plan
+terraform apply
+```
+
+На Windows PowerShell:
+
+```powershell
+$env:TF_VAR_proxmox_api_token_id='terraform@pve!iac'
+$env:TF_VAR_proxmox_api_token_secret='token-secret'
+terraform init
+terraform plan
+terraform apply
+```
+
+### `cad_dhcp`
+
+Сабмодуль `cad_dhcp` содержит конфигурацию Kea DHCPv4:
+
+```text
+cad_dhcp/kea-dhcp4.conf
+```
+
+DHCP настроен на работу с интерфейсами:
+
+```text
+eth0
+eth1
+```
+
+В конфигурации описаны две подсети:
+
+| Подсеть | DHCP pool | Gateway | DNS | Domain |
+|---|---|---|---|---|
+| `10.10.0.0/24` | `10.10.0.100 - 10.10.0.199` | `10.10.0.1` | `10.10.0.2` | `cad.internal` |
+| `10.10.1.0/24` | `10.10.1.100 - 10.10.1.199` | `10.10.1.1` | `10.10.0.2` | `cad.internal` |
+
+Файл аренды сохраняется в:
+
+```text
+/var/lib/kea/kea-leases4.csv
+```
+
+Типовой порядок установки на Debian/Ubuntu:
+
+```bash
+apt update
+apt install kea-dhcp4-server
+cp cad_dhcp/kea-dhcp4.conf /etc/kea/kea-dhcp4.conf
+kea-dhcp4 -t /etc/kea/kea-dhcp4.conf
+systemctl restart kea-dhcp4-server
+systemctl status kea-dhcp4-server
+```
+
+Перед запуском нужно убедиться, что имена интерфейсов в конфигурации Kea совпадают с интерфейсами DHCP-сервера.
+
+### `cad_dns`
+
+Сабмодуль `cad_dns` содержит конфигурацию Unbound:
+
+```text
+cad_dns/unbound.conf
+cad_dns/unbound.conf.d/infra.conf
+cad_dns/unbound.conf.d/remote-control.conf
+cad_dns/unbound.conf.d/root-auto-trust-anchor-file.conf
+```
+
+Конфигурация:
+
+- слушает DNS-запросы на `0.0.0.0` и `10.10.0.2`;
+- разрешает запросы из `127.0.0.0/8`, `10.10.0.0/24`, `10.10.1.0/24`;
+- включает IPv4, UDP и TCP;
+- скрывает identity/version сервера;
+- включает DNSSEC trust anchor;
+- создаёт локальную зону `cad.internal`;
+- содержит A-записи для `pve1.cad.internal` - `pve11.cad.internal`.
+
+Типовая установка:
+
+```bash
+apt update
+apt install unbound
+cp cad_dns/unbound.conf /etc/unbound/unbound.conf
+cp cad_dns/unbound.conf.d/*.conf /etc/unbound/unbound.conf.d/
+unbound-checkconf
+systemctl restart unbound
+systemctl status unbound
+```
+
+Важно проверить согласованность DNS-адреса. DHCP выдаёт клиентам DNS `10.10.0.2`, и Unbound также слушает `10.10.0.2`. Если DNS-сервер фактически размещён на другом IP, нужно одновременно обновить `cad_dhcp/kea-dhcp4.conf` и `cad_dns/unbound.conf.d/infra.conf`.
+
 ## Пример адресного плана
 
 Ниже приведён пример. Перед установкой его нужно адаптировать под свою сеть.
