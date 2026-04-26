@@ -1,3 +1,9 @@
 [submodule "cad_terraform"]
 	path = cad_terraform
 	url = https://github.com/MichShch/cad_terraform.git
+[submodule "cad_dhcp"]
+	path = cad_dhcp
+	url = git@github.com:MichShch/cad_dhcp.git
+[submodule "cad_dns"]
+	path = cad_dns
+	url = git@github.com:MichShch/cad_dns.git
